@@ -6,10 +6,39 @@ glob llm = Ollama(model_name='llama3.1');
 import:jac from rag {RagEngine}
 glob rag_engine:RagEngine = RagEngine();
 
+enum ChatType {
+    RAG : 'Need to use Retrievable information in specific documents to respond' = "RAG",
+    QA : 'Given context is enough for an answer' = "user_qa",
+    FRIENDLY : 'Casual speech such as how are you or hello' = "friendly"
+}
 
 node Router {
     can 'route the query to the appropriate task type'
     classify(message:'query from the user to be routed.':str) -> ChatType by llm(method="Reason", temperature=0.0);
+}
+
+node Chat {
+    has chat_type: ChatType;
+}
+
+walker infer {
+    has message:str;
+    has chat_history: list[dict];
+
+    can init_router with `root entry {
+        visit [-->](`?Router) else {
+            router_node = here ++> Router();
+            router_node ++> RagChat();
+            router_node ++> QAChat();
+            router_node ++> FriendlyChat();
+            visit router_node;
+        }
+    }
+
+    can route with Router entry {
+        classification = here.classify(message = self.message);
+        visit [-->](`?Chat)(?chat_type==classification);
+    }
 }
 
 walker interact {
@@ -26,24 +55,49 @@ walker interact {
     }
 }
 
-walker infer {
-    has message:str;
-    has chat_history: list[dict];
+node RagChat :Chat: {
+    has chat_type: ChatType = ChatType.RAG;
 
-    can init_router with `root entry {
-        visit [-->](`?Router) else {
-            router_node = here ++> Router();
-            router_node ++> RagChat();
-            router_node ++> QAChat();
-            visit router_node;
-        }
-    }
-
-    can route with Router entry {
-        classification = here.classify(message = self.message);
-        visit [-->](`?Chat)(?chat_type==classification);
+    can respond with infer entry {
+        can 'Respond to message using chat_history as context and agent_role as the goal of the agent'
+        respond_with_llm(   message:'current message':str,
+                    chat_history: 'chat history':list[dict],
+                    agent_role:'role of the agent responding':str,
+                    context:'retrieved context from documents':list
+                        ) -> 'response':str by llm();
+        data = rag_engine.get_from_chroma(query=here.message);
+        here.response = respond_with_llm(here.message, here.chat_history, "You are a conversation agent designed to help users with their queries based on the documents provided", data);
     }
 }
+
+node QAChat :Chat: {
+    has chat_type: ChatType = ChatType.QA;
+
+    can respond with infer entry {
+        can 'Respond to message using chat_history as context and agent_role as the goal of the agent'
+        respond_with_llm(   message:'current message':str,
+            chat_history: 'chat history':list[dict],
+            agent_role:'role of the agent responding':str
+                ) -> 'response':str by llm();
+        here.response = respond_with_llm(here.message, here.chat_history, agent_role="You are a conversation agent designed to help users with their queries");
+    }
+}
+
+node FriendlyChat :Chat: {
+    has chat_type: ChatType = ChatType.FRIENDLY;
+
+    can respond with infer entry {
+        can 'Respond to message using chat_history as context and agent_role as the goal of the agent'
+        respond_with_llm(   message:'current message':str,
+                    chat_history: 'chat history':list[dict],
+                    agent_role:'role of the agent responding':str,
+                    context:'retrieved context from documents':list
+                        ) -> 'response':str by llm();
+        data = rag_engine.get_from_chroma(query=here.message);
+        here.response = respond_with_llm(here.message, here.chat_history, "You are a conversation agent designed to casually help users with their queries based on the documents provided", data);
+    }
+}
+
 
 node Session {
     has id: str;
@@ -66,42 +120,5 @@ node Session {
         report {
             "response": response.response
         };
-    }
-}
-
-enum ChatType {
-    RAG : 'Need to use Retrievable information in specific documents to respond' = "RAG",
-    QA : 'Given context is enough for an answer' = "user_qa"
-}
-
-node Chat {
-    has chat_type: ChatType;
-}
-
-node RagChat :Chat: {
-    has chat_type: ChatType = ChatType.RAG;
-
-    can respond with infer entry {
-        can 'Respond to message using chat_history as context and agent_role as the goal of the agent'
-        respond_with_llm(   message:'current message':str,
-                    chat_history: 'chat history':list[dict],
-                    agent_role:'role of the agent responding':str,
-                    context:'retirved context from documents':list
-                        ) -> 'response':str by llm();
-        data = rag_engine.get_from_chroma(query=here.message);
-        here.response = respond_with_llm(here.message, here.chat_history, "You are a conversation agent designed to help users with their queries based on the documents provided", data);
-    }
-}
-
-node QAChat :Chat: {
-    has chat_type: ChatType = ChatType.QA;
-
-    can respond with infer entry {
-        can 'Respond to message using chat_history as context and agent_role as the goal of the agent'
-        respond_with_llm(   message:'current message':str,
-            chat_history: 'chat history':list[dict],
-            agent_role:'role of the agent responding':str
-                ) -> 'response':str by llm();
-        here.response = respond_with_llm(here.message, here.chat_history, agent_role="You are a conversation agent designed to help users with their queries");
     }
 }
